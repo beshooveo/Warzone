@@ -3,6 +3,7 @@
 # app.include_router(registration_router)
 
 import json
+import hashlib
 import os
 import re
 import shutil
@@ -342,8 +343,11 @@ def slugify(value: str) -> str:
 
 def require_admin(request: Request) -> None:
     supplied = request.headers.get("x-admin-password") or request.query_params.get("p") or request.query_params.get("password")
-    if supplied != ADMIN_PASSWORD:
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    admin_cookie = request.cookies.get("warzone_admin_auth")
+    admin_token = hashlib.sha256(f"warzone-admin:{ADMIN_PASSWORD}".encode("utf-8")).hexdigest()
+    if supplied == ADMIN_PASSWORD or admin_cookie == admin_token:
+        return
+    raise HTTPException(status_code=401, detail="محتاج تسجيل دخول للأدمن")
 
 
 def public_team(team: Dict[str, Any], request: Optional[Request] = None, include_files: bool = True) -> Dict[str, Any]:
@@ -775,6 +779,23 @@ async def import_registration_excel(request: Request, team_name: str = Form(""),
     return await preview_registration_excel(request, team_name, file)
 
 
+@router.get("/api/public-teams")
+def public_teams(request: Request):
+    data = load_data()
+    teams = []
+    for team in data.get("teams", []):
+        players = []
+        for player in team.get("players", []):
+            has_photo = bool((player.get("files") or {}).get("photo"))
+            players.append({
+                "id": player.get("id"),
+                "name": player.get("name", ""),
+                "photo_url": str(request.base_url).rstrip("/") + f"/api/public-team-photo/{team.get('id')}/{player.get('id')}" if has_photo else "",
+            })
+        teams.append({"id": team.get("id"), "team_name": team.get("team_name", ""), "players_count": len(players), "players": players})
+    return {"teams": teams}
+
+
 @router.get("/api/admin/player-photos")
 def list_player_photos(request: Request):
     require_admin(request)
@@ -789,11 +810,7 @@ def list_player_photos(request: Request):
                 "name": player.get("name", ""),
                 "photo_url": str(request.base_url).rstrip("/") + f"/api/registration-file/{team.get('id')}/{player.get('id')}/photo" if has_photo else "",
             })
-        teams.append({
-            "id": team.get("id"),
-            "team_name": team.get("team_name", ""),
-            "players": players,
-        })
+        teams.append({"id": team.get("id"), "team_name": team.get("team_name", ""), "players": players})
     return {"teams": teams}
 
 
@@ -813,8 +830,7 @@ async def update_player_photo(team_id: str, player_id: str, request: Request, ph
                                 drive_store.delete_ref(old_photo)
                             else:
                                 old_path = DATA_DIR / old_photo
-                                if old_path.exists() and old_path.is_file():
-                                    old_path.unlink()
+                                if old_path.exists() and old_path.is_file(): old_path.unlink()
                         except Exception:
                             pass
                     team["updated_at"] = now_iso()
