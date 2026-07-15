@@ -441,9 +441,7 @@ async def save_uploaded_file(upload: StarletteUploadFile, team_id: str, player_i
 
     filename = f"{kind}_{uuid.uuid4().hex}{ext}"
 
-    # Railway/local storage fallback:
-    # Google Drive service accounts can fail with storageQuotaExceeded.
-    # Do not break uploads; store the file on the Railway volume instead.
+    # Try Google Drive first if configured, but never fail the upload because of Drive quota/auth errors.
     gref = None
     try:
         gref = drive_store.upload_bytes(f"file_{team_id}_{player_id}_{filename}", data, content_type or "application/octet-stream")
@@ -798,7 +796,11 @@ def public_teams(request: Request):
         players = []
         for player in team.get("players", []):
             has_photo = bool((player.get("files") or {}).get("photo"))
-            players.append({"id": player.get("id"), "name": player.get("name", ""), "photo_url": str(request.base_url).rstrip("/") + f"/api/public-team-photo/{team.get('id')}/{player.get('id')}" if has_photo else ""})
+            players.append({
+                "id": player.get("id"),
+                "name": player.get("name", ""),
+                "photo_url": str(request.base_url).rstrip("/") + f"/api/public-team-photo/{team.get('id')}/{player.get('id')}" if has_photo else "",
+            })
         teams.append({"id": team.get("id"), "team_name": team.get("team_name", ""), "players_count": len(players), "players": players})
     return {"teams": teams}
 
@@ -812,7 +814,11 @@ def list_player_photos(request: Request):
         players = []
         for player in team.get("players", []):
             has_photo = bool((player.get("files") or {}).get("photo"))
-            players.append({"id": player.get("id"), "name": player.get("name", ""), "photo_url": str(request.base_url).rstrip("/") + f"/api/registration-file/{team.get('id')}/{player.get('id')}/photo" if has_photo else ""})
+            players.append({
+                "id": player.get("id"),
+                "name": player.get("name", ""),
+                "photo_url": str(request.base_url).rstrip("/") + f"/api/registration-file/{team.get('id')}/{player.get('id')}/photo" if has_photo else "",
+            })
         teams.append({"id": team.get("id"), "team_name": team.get("team_name", ""), "players": players})
     return {"teams": teams}
 
@@ -825,7 +831,17 @@ async def update_player_photo(team_id: str, player_id: str, request: Request, ph
         if team.get("id") == team_id:
             for player in team.get("players", []):
                 if player.get("id") == player_id:
+                    old_photo = (player.get("files") or {}).get("photo")
                     player.setdefault("files", {})["photo"] = await save_uploaded_file(photo, team_id, player_id, "photo")
+                    if old_photo and old_photo != player["files"]["photo"]:
+                        try:
+                            if str(old_photo).startswith("gdrive:"):
+                                drive_store.delete_ref(old_photo)
+                            else:
+                                old_path = DATA_DIR / old_photo
+                                if old_path.exists() and old_path.is_file(): old_path.unlink()
+                        except Exception:
+                            pass
                     team["updated_at"] = now_iso()
                     save_data(data)
                     return {"status": "success", "message": "تم تحديث الصورة بنجاح"}

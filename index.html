@@ -606,7 +606,9 @@ img {
     }
 }
         
-    </style>
+    
+.teams-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px}.team-card{background:#fff;border:1px solid #e2e8f0;border-radius:14px;overflow:hidden;box-shadow:0 4px 10px rgba(15,23,42,.08)}.team-header{width:100%;border:none;background:linear-gradient(135deg,#1e3a8a,#2563eb);color:#fff;padding:14px 16px;font-weight:800;font-size:1rem;cursor:pointer;display:flex;justify-content:space-between;align-items:center;text-align:right}.team-players{display:none;padding:14px;background:#f8fafc}.team-card.open .team-players{display:grid;gap:10px}.player-row{display:flex;align-items:center;gap:10px;background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:10px}.player-photo,.player-placeholder{width:54px;height:54px;border-radius:50%;border:2px solid #bfdbfe;flex:0 0 auto}.player-photo{object-fit:cover;background:#e2e8f0}.player-placeholder{background:#dbeafe;color:#1e3a8a;display:flex;align-items:center;justify-content:center;font-weight:800}.player-name{font-weight:700;color:#0f172a}
+</style>
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
@@ -758,7 +760,21 @@ async function loadInitialTab() {
     document.getElementById('groups-container').innerHTML = '<p style="text-align:center; padding:20px;">كل التابات مخفية حالياً من لوحة التحكم.</p>';
 }
 
-async function loadTeamsTab(){document.getElementById('sports-nav').style.display='none';document.getElementById('current-sport-title').innerText='الفرق';const c=document.getElementById('groups-container');const d=await fetchJson('/api/public-teams');c.innerHTML=(d.teams||[]).map(t=>`<div class='group-card'><h3>${escapeHtml(t.team_name||'')}</h3>${(t.players||[]).map(p=>`<p>${p.photo_url?`<img src='${escapeHtml(p.photo_url)}' style='width:42px;height:42px;border-radius:50%;object-fit:cover;vertical-align:middle;margin-left:8px'>`:''}${escapeHtml(p.name||'')}</p>`).join('')}</div>`).join('')||'<p>لسه مفيش فرق مسجلة.</p>';}
+
+function toggleTeamCard(teamId){const card=document.getElementById(`team-card-${teamId}`);if(card)card.classList.toggle('open');}
+async function loadTeamsTab(){
+    currentView='teams'; isFinalsMode=false;
+    document.getElementById('sports-nav').style.display='none';
+    document.getElementById('current-sport-title').innerText='الفرق';
+    const container=document.getElementById('groups-container');
+    container.innerHTML="<p style='text-align:center; padding:20px;'>جاري تحميل الفرق...</p>";
+    try{
+        const data=await fetchJson('/api/public-teams'); const teams=data.teams||[];
+        if(!teams.length){container.innerHTML="<p style='text-align:center; padding:20px;'>لسه مفيش فرق مسجلة.</p>";return;}
+        container.innerHTML=`<div class="teams-grid">${teams.map(team=>{const id=escapeHtml(team.id||'');const players=team.players||[];return `<div class="team-card" id="team-card-${id}"><button class="team-header" onclick="toggleTeamCard('${id}')"><span>${escapeHtml(team.team_name||'فريق بدون اسم')}</span><span>${players.length} لاعب ▼</span></button><div class="team-players">${players.map(player=>{const name=escapeHtml(player.name||'لاعب');const photo=player.photo_url?`<img class="player-photo" src="${escapeHtml(player.photo_url)}" alt="${name}" loading="lazy">`:`<div class="player-placeholder">${name.slice(0,1)}</div>`;return `<div class="player-row">${photo}<div class="player-name">${name}</div></div>`}).join('')||'<p style="text-align:center;color:#64748b;">لا يوجد لاعبين</p>'}</div></div>`}).join('')}</div>`;
+    }catch(e){container.innerHTML="<p style='color:red;text-align:center;'>فشل تحميل الفرق.</p>";}
+}
+
 function goHome(v2 = false) {
     isFinalsMode = false;
     isVersion2 = v2;
