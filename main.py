@@ -1197,6 +1197,62 @@ async def sync_google_sheets_loop():
         await asyncio.sleep(120)
 
 
+
+# =========================
+# Manual Backup / Restore
+# =========================
+def build_backup_snapshot() -> Dict[str, Any]:
+    return {
+        "backup_type": "warzone_full_backup",
+        "schema_version": 1,
+        "created_at": datetime.now().isoformat(),
+        "warzone_main": load_data(),
+        "registrations": registration_data_module.load_data(),
+        "whatsapp_groups": registration_data_module.load_whatsapp_groups(),
+    }
+
+
+@app.get("/api/admin/backup-download")
+def download_backup(request: Request):
+    require_admin(request)
+    snapshot = build_backup_snapshot()
+    filename = f"warzone_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    content = json.dumps(snapshot, ensure_ascii=False, indent=2)
+    return Response(
+        content=content,
+        media_type="application/json; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.post("/api/admin/backup-upload")
+def upload_backup(request: Request, payload: Dict[str, Any] = Body(...)):
+    require_admin(request)
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="ملف الباك اب غير صحيح.")
+    if payload.get("backup_type") != "warzone_full_backup":
+        raise HTTPException(status_code=400, detail="ده مش ملف باك اب War Zone صحيح.")
+    warzone_main = payload.get("warzone_main")
+    registrations = payload.get("registrations")
+    whatsapp_groups = payload.get("whatsapp_groups")
+    if not isinstance(warzone_main, dict) or not isinstance(registrations, dict) or not isinstance(whatsapp_groups, dict):
+        raise HTTPException(status_code=400, detail="ملف الباك اب ناقص بيانات.")
+    if not isinstance(registrations.get("teams"), list):
+        raise HTTPException(status_code=400, detail="بيانات الفرق في الباك اب غير صحيحة.")
+    if not isinstance(whatsapp_groups.get("groups"), list):
+        raise HTTPException(status_code=400, detail="بيانات جروبات الواتساب في الباك اب غير صحيحة.")
+
+    save_data(warzone_main)
+    registration_data_module.save_data(registrations)
+    registration_data_module.save_whatsapp_groups(whatsapp_groups)
+    return {
+        "ok": True,
+        "message": "تم استرجاع الباك اب بنجاح.",
+        "teams_count": len(registrations.get("teams", [])),
+        "created_at": payload.get("created_at"),
+    }
+
+
 # =========================
 # Static pages
 # =========================
@@ -1213,6 +1269,11 @@ async def serve_home():
 @app.get("/admin")
 async def serve_admin():
     return FileResponse("admin.html")
+
+
+@app.get("/backup")
+async def serve_backup():
+    return FileResponse("backup.html")
 
 
 @app.get("/sheets")

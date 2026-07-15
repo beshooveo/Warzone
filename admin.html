@@ -26,7 +26,9 @@
             padding: 30px;
             min-height: 100vh;
         }
-        .page-title { text-align: center; color: var(--primary-blue); margin-bottom: 25px; }
+        .page-title { text-align: center; color: var(--primary-blue); margin-bottom: 12px; }
+        .top-links { display: flex; justify-content: center; gap: 12px; flex-wrap: wrap; margin-bottom: 25px; }
+        .top-links a { color: var(--primary-blue); text-decoration: none; border: 1px solid var(--border-color); padding: 10px 14px; border-radius: 999px; background: var(--card-bg-2); }
         .grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
@@ -126,6 +128,7 @@
 </head>
 <body>
     <h1 class="page-title">🏆 لوحة تحكم War Zone</h1>
+    <div class="top-links"><a href="/backup">💾 Backup</a><a href="/registrations">التسجيلات</a><a href="/">الرئيسية</a></div>
 
     <section class="card" id="loginScreen" style="max-width:520px; margin: 0 auto;">
         <h2>🔐 تسجيل دخول الأدمن</h2>

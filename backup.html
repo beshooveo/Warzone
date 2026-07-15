@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Backup - War Zone</title>
+    <style>
+        :root {
+            --bg-dark: #0f172a;
+            --card-bg: rgba(30, 41, 59, 0.78);
+            --card-bg-2: rgba(15, 23, 42, 0.68);
+            --primary-blue: #38bdf8;
+            --accent-green: #34d399;
+            --danger: #f87171;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            --border-color: rgba(255, 255, 255, 0.12);
+        }
+        * { box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: radial-gradient(circle at top right, rgba(56, 189, 248, 0.16), transparent 35%), var(--bg-dark);
+            color: var(--text-main);
+            margin: 0;
+            padding: 30px;
+            min-height: 100vh;
+        }
+        .container { max-width: 1050px; margin: 0 auto; }
+        .page-title { text-align: center; color: var(--primary-blue); margin: 0 0 8px; }
+        .subtitle { text-align: center; color: var(--text-muted); margin: 0 0 24px; line-height: 1.8; }
+        .top-links { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-bottom: 22px; }
+        .top-links a { color: var(--primary-blue); text-decoration: none; border: 1px solid var(--border-color); padding: 10px 14px; border-radius: 999px; background: var(--card-bg-2); }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 22px; }
+        .card {
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            padding: 24px;
+            border-radius: 22px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.28);
+        }
+        .card h2 { margin: 0 0 12px; color: var(--primary-blue); font-size: 1.35rem; }
+        .help { color: var(--text-muted); line-height: 1.8; margin: 0 0 18px; font-size: .95rem; }
+        button, .file-label {
+            width: 100%;
+            padding: 13px;
+            border-radius: 12px;
+            border: none;
+            color: white;
+            background: linear-gradient(135deg, #0284c7, #0369a1);
+            font-size: 1rem;
+            font-weight: bold;
+            cursor: pointer;
+            display: block;
+            text-align: center;
+        }
+        button:hover, .file-label:hover { transform: translateY(-1px); box-shadow: 0 8px 22px rgba(56, 189, 248, 0.22); }
+        button.danger { background: linear-gradient(135deg, #dc2626, #991b1b); margin-top: 12px; }
+        button:disabled { opacity: .55; cursor: not-allowed; transform: none; box-shadow: none; }
+        input[type="file"] { display: none; }
+        .selected-file { margin-top: 12px; color: var(--text-muted); word-break: break-all; }
+        .warning { border: 1px solid rgba(248, 113, 113, .35); background: rgba(127, 29, 29, .25); color: #fecaca; padding: 12px; border-radius: 12px; line-height: 1.8; margin-top: 12px; }
+        .status { margin-top: 14px; padding: 12px; border-radius: 12px; display: none; line-height: 1.7; }
+        .status.success { display: block; background: rgba(16,185,129,.14); color: #bbf7d0; border: 1px solid rgba(52,211,153,.28); }
+        .status.error { display: block; background: rgba(239,68,68,.14); color: #fecaca; border: 1px solid rgba(248,113,113,.28); }
+        .status.info { display: block; background: rgba(56,189,248,.12); color: #bae6fd; border: 1px solid rgba(56,189,248,.25); }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 class="page-title">💾 Backup</h1>
+        <p class="subtitle">تحميل أو استرجاع حالة الموقع الحالية: الفرق، الماتشات، النتائج، المجموعات، التسجيلات، وحالة الصفحات.</p>
+        <div class="top-links">
+            <a href="/admin">لوحة التحكم</a>
+            <a href="/">الصفحة الرئيسية</a>
+            <a href="/registrations">التسجيلات</a>
+        </div>
+
+        <div class="grid">
+            <section class="card">
+                <h2>⬇️ Download Backup</h2>
+                <p class="help">اضغط هنا لتحميل ملف JSON فيه كل بيانات War Zone بالحالة الموجودة دلوقتي.</p>
+                <button onclick="downloadBackup()">تحميل الباك اب</button>
+                <div id="downloadStatus" class="status"></div>
+            </section>
+
+            <section class="card">
+                <h2>⬆️ Upload Backup</h2>
+                <p class="help">ارفع ملف Backup قديم علشان يرجّع حالة الصفحات والفرق والماتشات والنتائج والتسجيلات منه.</p>
+                <label class="file-label" for="backupFile">اختيار ملف الباك اب</label>
+                <input id="backupFile" type="file" accept="application/json,.json" onchange="onFileSelected()">
+                <div id="selectedFile" class="selected-file">لم يتم اختيار ملف</div>
+                <div class="warning">تحذير: رفع الباك اب هيستبدل البيانات الحالية بالكامل بالبيانات الموجودة في الملف.</div>
+                <button id="uploadBtn" class="danger" onclick="uploadBackup()" disabled>استرجاع الباك اب</button>
+                <div id="uploadStatus" class="status"></div>
+            </section>
+        </div>
+    </div>
+
+<script>
+function setStatus(id, text, type = 'info') {
+    const el = document.getElementById(id);
+    el.className = `status ${type}`;
+    el.textContent = text;
+}
+
+async function downloadBackup() {
+    setStatus('downloadStatus', 'جاري تجهيز ملف الباك اب...', 'info');
+    try {
+        const res = await fetch('/api/admin/backup-download', { credentials: 'same-origin' });
+        if (!res.ok) {
+            let err = {};
+            try { err = await res.json(); } catch(e) {}
+            throw new Error(err.detail || 'فشل تحميل الباك اب. اتأكد إنك عامل Login كأدمن.');
+        }
+        const blob = await res.blob();
+        const disposition = res.headers.get('Content-Disposition') || '';
+        const match = disposition.match(/filename="?([^";]+)"?/);
+        const filename = match ? match[1] : `warzone_backup_${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.json`;
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        setStatus('downloadStatus', 'تم تحميل ملف الباك اب بنجاح ✅', 'success');
+    } catch (e) {
+        setStatus('downloadStatus', e.message, 'error');
+    }
+}
+
+function onFileSelected() {
+    const file = document.getElementById('backupFile').files[0];
+    document.getElementById('selectedFile').textContent = file ? file.name : 'لم يتم اختيار ملف';
+    document.getElementById('uploadBtn').disabled = !file;
+}
+
+async function uploadBackup() {
+    const file = document.getElementById('backupFile').files[0];
+    if (!file) return;
+    if (!confirm('متأكد إنك عايز تستبدل البيانات الحالية بالباك اب ده؟')) return;
+    setStatus('uploadStatus', 'جاري قراءة الملف واسترجاع البيانات...', 'info');
+    try {
+        const text = await file.text();
+        const data = JSON.parse(text);
+        const res = await fetch('/api/admin/backup-upload', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+        const result = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(result.detail || 'فشل استرجاع الباك اب.');
+        setStatus('uploadStatus', `${result.message || 'تم استرجاع الباك اب بنجاح.'} عدد الفرق: ${result.teams_count ?? 0} ✅`, 'success');
+    } catch (e) {
+        setStatus('uploadStatus', e.message || 'ملف الباك اب غير صالح.', 'error');
+    }
+}
+</script>
+</body>
+</html>
