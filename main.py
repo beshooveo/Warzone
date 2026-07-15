@@ -98,7 +98,6 @@ VERSION_LABELS = {"1": "المجموعات", "2": "المجموعات 2"}
 DAY_LABELS = {"Day1": "اليوم الأول", "Day2": "اليوم الثاني"}
 
 DEFAULT_VISIBILITY = {
-    "teams": True,
     "groups": True,
     "groups2": True,
     "finals": True,
@@ -1275,6 +1274,11 @@ async def serve_admin():
 @app.get("/backup")
 async def serve_backup():
     return FileResponse("backup.html")
+
+
+@app.get("/photos")
+async def serve_photos():
+    return FileResponse("photos.html")
 
 
 @app.get("/sheets")
