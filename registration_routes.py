@@ -775,6 +775,28 @@ async def import_registration_excel(request: Request, team_name: str = Form(""),
     return await preview_registration_excel(request, team_name, file)
 
 
+@router.get("/api/public-teams")
+def public_teams(request: Request):
+    data = load_data()
+    teams = []
+    for team in data.get("teams", []):
+        item = public_team(team, request=request, include_files=True)
+        players = []
+        for player in item.get("players", []):
+            players.append({
+                "id": player.get("id"),
+                "name": player.get("name", ""),
+                "photo_url": str(request.base_url).rstrip("/") + f"/api/public-team-photo/{item.get('id')}/{player.get('id')}",
+            })
+        teams.append({
+            "id": item.get("id"),
+            "team_name": item.get("team_name", ""),
+            "players_count": len(players),
+            "players": players,
+        })
+    return {"teams": teams}
+
+
 @router.get("/api/registrations")
 def list_registrations(request: Request):
     require_admin(request)
@@ -1028,6 +1050,20 @@ def delete_registration(team_id: str, request: Request):
     release_whatsapp_group(team_id)
     save_data(data)
     return {"status": "success"}
+
+
+@router.get("/api/public-team-photo/{team_id}/{player_id}")
+def get_public_team_photo(team_id: str, player_id: str):
+    data = load_data()
+    for team in data.get("teams", []):
+        if team.get("id") == team_id:
+            for player in team.get("players", []):
+                if player.get("id") == player_id:
+                    rel = (player.get("files") or {}).get("photo")
+                    if not rel:
+                        raise HTTPException(status_code=404, detail="الصورة غير موجودة.")
+                    return file_response_from_ref(rel, "photo.jpg")
+    raise HTTPException(status_code=404, detail="الصورة غير موجودة.")
 
 
 @router.get("/api/registration-file/{team_id}/{player_id}/{kind}")
