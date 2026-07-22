@@ -1,0 +1,76 @@
+{
+  "groups": [
+    {
+      "slot": 1,
+      "name": "جروب واتساب 1",
+      "link": "",
+      "team_id": null
+    },
+    {
+      "slot": 2,
+      "name": "جروب واتساب 2",
+      "link": "",
+      "team_id": null
+    },
+    {
+      "slot": 3,
+      "name": "جروب واتساب 3",
+      "link": "",
+      "team_id": null
+    },
+    {
+      "slot": 4,
+      "name": "جروب واتساب 4",
+      "link": "",
+      "team_id": null
+    },
+    {
+      "slot": 5,
+      "name": "جروب واتساب 5",
+      "link": "",
+      "team_id": null
+    },
+    {
+      "slot": 6,
+      "name": "جروب واتساب 6",
+      "link": "",
+      "team_id": null
+    },
+    {
+      "slot": 7,
+      "name": "جروب واتساب 7",
+      "link": "",
+      "team_id": null
+    },
+    {
+      "slot": 8,
+      "name": "جروب واتساب 8",
+      "link": "",
+      "team_id": null
+    },
+    {
+      "slot": 9,
+      "name": "جروب واتساب 9",
+      "link": "",
+      "team_id": null
+    },
+    {
+      "slot": 10,
+      "name": "جروب واتساب 10",
+      "link": "",
+      "team_id": null
+    },
+    {
+      "slot": 11,
+      "name": "جروب واتساب 11",
+      "link": "",
+      "team_id": null
+    },
+    {
+      "slot": 12,
+      "name": "جروب واتساب 12",
+      "link": "",
+      "team_id": null
+    }
+  ]
+}
