@@ -102,7 +102,7 @@ DEFAULT_VISIBILITY = {
     "groups": True,
     "groups2": False,
     "finals": False,
-    "matches_day1": True,
+    "matches_day1": False,
     "matches_day2": False,
     "results_day1": False,
     "results_day2": False,
