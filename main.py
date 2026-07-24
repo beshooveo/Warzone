@@ -99,8 +99,8 @@ DAY_LABELS = {"Day1": "اليوم الأول", "Day2": "اليوم الثاني"
 
 DEFAULT_VISIBILITY = {
     "teams": False,
-    "groups": True,
-    "groups2": False,
+    "groups": False,
+    "groups2": True,
     "finals": False,
     "matches_day1": False,
     "matches_day2": True,
