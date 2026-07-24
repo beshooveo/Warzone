@@ -1,8 +1,9 @@
 import base64
 import json
 import os
+import re
 from io import BytesIO
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 try:
     from google.oauth2 import service_account
@@ -14,15 +15,30 @@ except Exception:
     MediaIoBaseDownload = None
     MediaIoBaseUpload = None
 
-SCOPES = ["https://www.googleapis.com/auth/drive"]
+SCOPES = [
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/spreadsheets",
+]
 _FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID", "").strip()
 _SA_B64 = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64", "").strip()
 _PREFIX = os.getenv("WARZONE_DRIVE_DATA_PREFIX", "warzone_data").strip() or "warzone_data"
 _SERVICE = None
+_SHEETS_SERVICE = None
 
 
 def enabled() -> bool:
     return bool(_FOLDER_ID and _SA_B64 and service_account and build)
+
+
+def sheets_enabled() -> bool:
+    return bool(_SA_B64 and service_account and build)
+
+
+def _credentials():
+    if not _SA_B64 or not service_account:
+        return None
+    info = json.loads(base64.b64decode(_SA_B64).decode("utf-8"))
+    return service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
 
 
 def _service():
@@ -31,10 +47,97 @@ def _service():
         return _SERVICE
     if not enabled():
         return None
-    info = json.loads(base64.b64decode(_SA_B64).decode("utf-8"))
-    creds = service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
+    creds = _credentials()
+    if not creds:
+        return None
     _SERVICE = build("drive", "v3", credentials=creds, cache_discovery=False)
     return _SERVICE
+
+
+def _sheets_service():
+    global _SHEETS_SERVICE
+    if _SHEETS_SERVICE is not None:
+        return _SHEETS_SERVICE
+    if not sheets_enabled():
+        return None
+    creds = _credentials()
+    if not creds:
+        return None
+    _SHEETS_SERVICE = build("sheets", "v4", credentials=creds, cache_discovery=False)
+    return _SHEETS_SERVICE
+
+
+def extract_spreadsheet_id(value: str) -> Optional[str]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    # Full URL
+    m = re.search(r"/spreadsheets/d/([a-zA-Z0-9-_]+)", text)
+    if m:
+        return m.group(1)
+    # Bare spreadsheet id
+    if re.fullmatch(r"[a-zA-Z0-9-_]{20,}", text):
+        return text
+    return None
+
+
+def extract_gid(value: str) -> Optional[str]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    m = re.search(r"[?&#]gid=([0-9]+)", text)
+    return m.group(1) if m else None
+
+
+def resolve_sheet_title(spreadsheet_id: str, preferred_name: str = "", gid: Optional[str] = None) -> Optional[str]:
+    svc = _sheets_service()
+    if not svc or not spreadsheet_id:
+        return None
+    meta = svc.spreadsheets().get(spreadsheetId=spreadsheet_id, fields="sheets(properties(sheetId,title))").execute()
+    sheets = meta.get("sheets", []) or []
+    if not sheets:
+        return None
+    preferred = str(preferred_name or "").strip()
+    if preferred:
+        for sh in sheets:
+            title = (sh.get("properties") or {}).get("title") or ""
+            if title == preferred:
+                return title
+    if gid is not None and str(gid).strip() != "":
+        try:
+            gid_int = int(str(gid))
+        except Exception:
+            gid_int = None
+        if gid_int is not None:
+            for sh in sheets:
+                props = sh.get("properties") or {}
+                if props.get("sheetId") == gid_int:
+                    return props.get("title")
+    return (sheets[0].get("properties") or {}).get("title")
+
+
+def write_values(spreadsheet_id: str, sheet_title: str, values: List[List[Any]], clear_first: bool = True) -> bool:
+    """Replace a worksheet with the given rows (including header)."""
+    svc = _sheets_service()
+    if not svc or not spreadsheet_id or not sheet_title:
+        return False
+    # Escape sheet title for A1 notation
+    safe_title = str(sheet_title).replace("'", "''")
+    rng = f"'{safe_title}'"
+    if clear_first:
+        svc.spreadsheets().values().clear(
+            spreadsheetId=spreadsheet_id,
+            range=rng,
+            body={},
+        ).execute()
+    body = {"values": values or [[]]}
+    svc.spreadsheets().values().update(
+        spreadsheetId=spreadsheet_id,
+        range=f"{rng}!A1",
+        valueInputOption="RAW",
+        body=body,
+    ).execute()
+    return True
 
 
 def _file_name(key: str) -> str:
@@ -94,7 +197,6 @@ def upload_bytes(key: str, data: bytes, mime_type: str = "application/octet-stre
     if key.startswith("file_"):
         name = "".join(ch if ch.isalnum() or ch in "._-/" else "_" for ch in key).replace("/", "__")
     media = MediaIoBaseUpload(BytesIO(data), mimetype=mime_type, resumable=False)
-    file_id = _find_file_id(name) if False else None
     meta = {"name": name, "parents": [_FOLDER_ID]}
     created = svc.files().create(body=meta, media_body=media, fields="id").execute()
     return "gdrive:" + created["id"]
@@ -123,7 +225,6 @@ def delete_ref(ref: str) -> bool:
         return True
     except Exception:
         return False
-
 
 
 def _ensure_folder(name: str, parent_id: str) -> Optional[str]:

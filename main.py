@@ -98,14 +98,14 @@ VERSION_LABELS = {"1": "المجموعات", "2": "المجموعات 2"}
 DAY_LABELS = {"Day1": "اليوم الأول", "Day2": "اليوم الثاني"}
 
 DEFAULT_VISIBILITY = {
-    "teams": False,
+    "teams": True,
     "groups": True,
-    "groups2": False,
-    "finals": False,
-    "matches_day1": False,
+    "groups2": True,
+    "finals": True,
+    "matches_day1": True,
     "matches_day2": True,
-    "results_day1": False,
-    "results_day2": False,
+    "results_day1": True,
+    "results_day2": True,
 }
 
 DATA_FILE = Path(os.getenv("WARZONE_DATA_FILE", "/tmp/warzone_data.json"))
@@ -128,12 +128,29 @@ DEFAULT_SHEET_URLS = {
     "Ultimate Ball2": "https://docs.google.com/spreadsheets/d/e/2PACX-1vTPGvQX6sgITTWxbUXDqQzLSmQqU6TBxmZJDt0DS9pKOMNnoK7490Bn1TvNQrFlGdJZIH0Z9YPGTYb6/pub?gid=1116838793&single=true&output=csv"
 }
 
+# شيت النتايج: الأدمن بيكتب عليه، والموقع بيقرأ منه دوريًا.
+# حط لينك CSV منشور (output=csv) للقراءة، ولو عايز كتابة من الأدمن:
+# - شارك الشيت Edit مع Service Account
+# - و/أو حط spreadsheet id / لينك الشيت العادي في RESULTS_SHEET_ID أو اللينك نفسه
+DEFAULT_RESULTS_URLS = {
+    "Day1": "",
+    "Day2": "",
+}
+DEFAULT_RESULTS_SHEET_NAMES = {
+    "Day1": "Results Day1",
+    "Day2": "Results Day2",
+}
+RESULTS_SHEET_ID_ENV = os.getenv("RESULTS_SHEET_ID", "").strip()
+RESULTS_SYNC_INTERVAL_SEC = int(os.getenv("RESULTS_SYNC_INTERVAL_SEC", "60") or "60")
+
 # Runtime keys remain the same, but URLs can be changed from /sheets and stored in warzone_data.json.
 MATCHES_URLS = DEFAULT_MATCHES_URLS
 SHEET_URLS = DEFAULT_SHEET_URLS
 
 all_matches_data: Dict[str, List[Dict[str, Any]]] = {k: [] for k in DEFAULT_MATCHES_URLS}
 all_standings_sheet_data: Dict[str, List[Dict[str, Any]]] = {k: [] for k in DEFAULT_SHEET_URLS}
+all_results_sheet_data: Dict[str, List[Dict[str, Any]]] = {k: [] for k in DEFAULT_RESULTS_URLS}
+_results_sheet_sync_lock = asyncio.Lock()
 
 # =========================
 # Push Notifications
@@ -223,6 +240,9 @@ class GroupOverridePayload(BaseModel):
 class SheetLinksPayload(BaseModel):
     standings: Dict[str, str] = {}
     matches: Dict[str, str] = {}
+    results: Dict[str, str] = {}
+    results_sheet_names: Dict[str, str] = {}
+    results_spreadsheet_id: str = ""
 
 
 class DrawSetupPayload(BaseModel):
@@ -242,29 +262,47 @@ class DrawControlPayload(BaseModel):
 # =========================
 # Data helpers
 # =========================
-def default_sheet_links() -> Dict[str, Dict[str, str]]:
+def default_sheet_links() -> Dict[str, Any]:
     return {
         "standings": DEFAULT_SHEET_URLS.copy(),
         "matches": DEFAULT_MATCHES_URLS.copy(),
+        "results": DEFAULT_RESULTS_URLS.copy(),
+        "results_sheet_names": DEFAULT_RESULTS_SHEET_NAMES.copy(),
+        "results_spreadsheet_id": RESULTS_SHEET_ID_ENV,
     }
 
 
-def ensure_sheet_links(data: Dict[str, Any]) -> Dict[str, Dict[str, str]]:
+def ensure_sheet_links(data: Dict[str, Any]) -> Dict[str, Any]:
     links = data.setdefault("sheet_links", default_sheet_links())
     links.setdefault("standings", {})
     links.setdefault("matches", {})
+    links.setdefault("results", {})
+    links.setdefault("results_sheet_names", {})
     for key, url in DEFAULT_SHEET_URLS.items():
         links["standings"].setdefault(key, url)
     for key, url in DEFAULT_MATCHES_URLS.items():
         links["matches"].setdefault(key, url)
+    for key, url in DEFAULT_RESULTS_URLS.items():
+        links["results"].setdefault(key, url)
+    for key, name in DEFAULT_RESULTS_SHEET_NAMES.items():
+        links["results_sheet_names"].setdefault(key, name)
     # Keep only known keys so accidental inputs do not break the app.
     links["standings"] = {k: str(links["standings"].get(k, DEFAULT_SHEET_URLS[k])).strip() or DEFAULT_SHEET_URLS[k] for k in DEFAULT_SHEET_URLS}
     links["matches"] = {k: str(links["matches"].get(k, DEFAULT_MATCHES_URLS[k])).strip() or DEFAULT_MATCHES_URLS[k] for k in DEFAULT_MATCHES_URLS}
+    # Results CSV links may be empty until admin configures them.
+    links["results"] = {k: str(links["results"].get(k, DEFAULT_RESULTS_URLS.get(k, "")) or "").strip() for k in DEFAULT_RESULTS_URLS}
+    links["results_sheet_names"] = {
+        k: str(links["results_sheet_names"].get(k, DEFAULT_RESULTS_SHEET_NAMES.get(k, k)) or DEFAULT_RESULTS_SHEET_NAMES.get(k, k)).strip()
+        or DEFAULT_RESULTS_SHEET_NAMES.get(k, k)
+        for k in DEFAULT_RESULTS_URLS
+    }
+    sid = str(links.get("results_spreadsheet_id") or RESULTS_SHEET_ID_ENV or "").strip()
+    links["results_spreadsheet_id"] = sid
     data["sheet_links"] = links
     return links
 
 
-def get_current_sheet_links() -> Dict[str, Dict[str, str]]:
+def get_current_sheet_links() -> Dict[str, Any]:
     return ensure_sheet_links(load_data())
 
 
@@ -276,11 +314,38 @@ def get_current_matches_urls() -> Dict[str, str]:
     return get_current_sheet_links()["matches"]
 
 
-def validate_sheet_url(url: str) -> str:
+def get_current_results_urls() -> Dict[str, str]:
+    return get_current_sheet_links()["results"]
+
+
+def get_current_results_sheet_names() -> Dict[str, str]:
+    return get_current_sheet_links()["results_sheet_names"]
+
+
+def get_results_spreadsheet_id(links: Optional[Dict[str, Any]] = None) -> str:
+    links = links or get_current_sheet_links()
+    sid = str(links.get("results_spreadsheet_id") or RESULTS_SHEET_ID_ENV or "").strip()
+    if sid:
+        extracted = drive_store.extract_spreadsheet_id(sid) or sid
+        return extracted
+    # Fallback: try extract from any results CSV/edit URL
+    for url in (links.get("results") or {}).values():
+        extracted = drive_store.extract_spreadsheet_id(str(url or ""))
+        if extracted:
+            return extracted
+    return ""
+
+
+def validate_sheet_url(url: str, allow_empty: bool = False) -> str:
     clean = str(url or "").strip()
     if not clean:
+        if allow_empty:
+            return ""
         raise HTTPException(status_code=400, detail="لينك الشيت لا يمكن يكون فاضي")
     if not clean.startswith(("http://", "https://")):
+        # allow bare spreadsheet ids for results write config
+        if drive_store.extract_spreadsheet_id(clean):
+            return clean
         raise HTTPException(status_code=400, detail="لينك الشيت لازم يبدأ بـ http أو https")
     return clean
 
@@ -628,6 +693,67 @@ def groups_from_sheet(data: Dict[str, Any], sport: str, version: str) -> Dict[st
             groups[group_name].append(team)
             seen[group_name].add(key)
     return groups
+
+
+def sheet_number_value(row: Dict[str, Any], *keys: str, default: int = 0) -> int:
+    for wanted in keys:
+        wanted_norm = normalize_text(wanted)
+        for key, value in row.items():
+            if normalize_text(key) != wanted_norm:
+                continue
+            text = str(value).strip()
+            if not text or text == "-":
+                return default
+            try:
+                return int(float(text.replace(",", "")))
+            except Exception:
+                return default
+    return default
+
+
+def standings_from_sheet(data: Dict[str, Any], sport: str, version: str) -> Dict[str, List[Dict[str, Any]]]:
+    """Build standings rows from the connected Google Sheet, not just team names."""
+    rows = get_sheet_rows_for_groups(sport, version)
+    standings: Dict[str, List[Dict[str, Any]]] = {}
+    seen: Dict[str, set] = {}
+
+    for row in rows:
+        group_name = clean_team_name(row.get("المجموعة", row.get("Group", "A"))) or "A"
+        team = apply_team_override(data, get_team_name_from_row(row))
+        if not team:
+            continue
+
+        key = normalize_text(team)
+        standings.setdefault(group_name, [])
+        seen.setdefault(group_name, set())
+        if key in seen[group_name]:
+            continue
+        seen[group_name].add(key)
+
+        played = sheet_number_value(row, "لعب", "played", "p")
+        wins = sheet_number_value(row, "فوز", "won", "win", "wins", "w")
+        draws = sheet_number_value(row, "تعادل", "draw", "draws", "d")
+        losses = sheet_number_value(row, "خسارة", "lost", "loss", "losses", "l")
+        goals_for = sheet_number_value(row, "له", "أهداف له", "اهداف له", "goals for", "gf")
+        goals_against = sheet_number_value(row, "عليه", "أهداف عليه", "اهداف عليه", "goals against", "ga")
+        goal_diff = sheet_number_value(row, "فرق", "فارق", "goal difference", "gd", default=goals_for - goals_against)
+        points = sheet_number_value(row, "نقاط", "النقاط", "points", "pts")
+
+        standings[group_name].append({
+            "الفريق": team,
+            "لعب": played,
+            "فوز": wins,
+            "تعادل": draws,
+            "خسارة": losses,
+            "له": goals_for,
+            "عليه": goals_against,
+            "فرق": goal_diff,
+            "نقاط": points,
+        })
+
+    for group_name, group_rows in standings.items():
+        group_rows.sort(key=lambda r: (-r["نقاط"], -r["فرق"], -r["له"], r["عليه"], r["الفريق"]))
+    return standings
 
 
 def get_manual_groups(data: Dict[str, Any], sport: str, version: str) -> Dict[str, List[str]]:
@@ -1082,23 +1208,30 @@ def ensure_result_valid(data: Dict[str, Any], payload: ResultPayload) -> None:
 def calculate_standings(data: Dict[str, Any], sport: str, version: str) -> Dict[str, List[Dict[str, Any]]]:
     groups = get_effective_groups(data, sport, version)
     results = data.get("results", {})
+    sheet_standings = standings_from_sheet(data, sport, version)
     standings: Dict[str, List[Dict[str, Any]]] = {}
 
     for group_name in sorted(groups.keys()):
         teams = [clean_team_name(t) for t in groups[group_name] if clean_team_name(t)]
         table: Dict[str, Dict[str, Any]] = {}
+        sheet_rows_by_name = {normalize_text(r.get("الفريق", "")): r for r in sheet_standings.get(group_name, [])}
         for team in teams:
-            table[team] = {
-                "الفريق": team,
-                "لعب": 0,
-                "فوز": 0,
-                "تعادل": 0,
-                "خسارة": 0,
-                "له": 0,
-                "عليه": 0,
-                "فرق": 0,
-                "نقاط": 0,
-            }
+            sheet_row = sheet_rows_by_name.get(normalize_text(team))
+            if sheet_row:
+                table[team] = dict(sheet_row)
+                table[team]["الفريق"] = team
+            else:
+                table[team] = {
+                    "الفريق": team,
+                    "لعب": 0,
+                    "فوز": 0,
+                    "تعادل": 0,
+                    "خسارة": 0,
+                    "له": 0,
+                    "عليه": 0,
+                    "فرق": 0,
+                    "نقاط": 0,
+                }
 
         for result in results.values():
             if result.get("sport") != sport or result.get("version") != version or result.get("group") != group_name:
@@ -1138,6 +1271,316 @@ def calculate_standings(data: Dict[str, Any], sport: str, version: str) -> Dict[
         standings[group_name] = rows
 
     return standings
+
+
+
+RESULTS_SHEET_HEADERS = [
+    "id",
+    "schedule_key",
+    "day_name",
+    "day_label",
+    "sport",
+    "sport_label",
+    "version",
+    "version_label",
+    "group",
+    "team1",
+    "team2",
+    "score1",
+    "score2",
+    "match_time",
+    "match_text",
+    "played_at",
+]
+
+
+def _row_get_ci(row: Dict[str, Any], *names: str) -> Any:
+    if not isinstance(row, dict):
+        return ""
+    lowered = {str(k).strip().lower(): v for k, v in row.items()}
+    for name in names:
+        key = str(name).strip().lower()
+        if key in lowered and lowered[key] not in (None, ""):
+            return lowered[key]
+    return ""
+
+
+def normalize_result_record(raw: Dict[str, Any], fallback_day: str = "") -> Optional[Dict[str, Any]]:
+    if not isinstance(raw, dict):
+        return None
+    day_name = str(_row_get_ci(raw, "day_name", "day", "اليوم") or fallback_day or "").strip()
+    if day_name in ("1", "يوم 1", "اليوم الأول", "اليوم الاول"):
+        day_name = "Day1"
+    elif day_name in ("2", "يوم 2", "اليوم الثاني"):
+        day_name = "Day2"
+    if day_name not in DEFAULT_RESULTS_URLS and day_name not in DAY_LABELS:
+        # try labels
+        for k, label in DAY_LABELS.items():
+            if day_name == label:
+                day_name = k
+                break
+    if day_name not in DAY_LABELS:
+        return None
+
+    sport = str(_row_get_ci(raw, "sport", "اللعبة") or "").strip()
+    # map labels back to keys
+    if sport not in SPORTS:
+        for k, label in SPORT_LABELS.items():
+            if sport == label or sport.lower() == k.lower():
+                sport = k
+                break
+    if sport not in SPORTS:
+        return None
+
+    version = str(_row_get_ci(raw, "version", "النسخة") or "1").strip() or "1"
+    if version not in ("1", "2"):
+        version = "1"
+
+    team1 = clean_team_name(_row_get_ci(raw, "team1", "team_1", "الفريق 1", "الفريق١"))
+    team2 = clean_team_name(_row_get_ci(raw, "team2", "team_2", "الفريق 2", "الفريق٢"))
+    if not team1 or not team2:
+        return None
+
+    try:
+        score1 = int(float(str(_row_get_ci(raw, "score1", "score_1", "نتيجة 1", "اهداف 1") or 0).strip() or 0))
+        score2 = int(float(str(_row_get_ci(raw, "score2", "score_2", "نتيجة 2", "اهداف 2") or 0).strip() or 0))
+    except Exception:
+        return None
+    if score1 < 0 or score2 < 0:
+        return None
+
+    group = str(_row_get_ci(raw, "group", "المجموعة") or "").strip()
+    match_time = str(_row_get_ci(raw, "match_time", "time", "التوقيت") or "").strip()
+    match_text = str(_row_get_ci(raw, "match_text", "الماتش") or "").strip() or f"{team1} vs {team2}"
+    played_at = str(_row_get_ci(raw, "played_at", "updated_at") or "").strip() or (datetime.utcnow().isoformat() + "Z")
+
+    rid = str(_row_get_ci(raw, "id", "schedule_key", "result_id") or "").strip()
+    if not rid:
+        raw_key = f"{day_name}|{sport}|{version}|{group}|{team1}|{team2}|{match_time}|{match_text}"
+        rid = hashlib.sha1(raw_key.encode("utf-8")).hexdigest()[:20]
+
+    return {
+        "id": rid,
+        "schedule_key": rid,
+        "day_name": day_name,
+        "day_label": DAY_LABELS.get(day_name, day_name),
+        "sport": sport,
+        "sport_label": SPORT_LABELS.get(sport, sport),
+        "version": version,
+        "version_label": VERSION_LABELS.get(version, version),
+        "group": group,
+        "team1": team1,
+        "team2": team2,
+        "score1": score1,
+        "score2": score2,
+        "match_time": match_time,
+        "match_text": match_text,
+        "played_at": played_at,
+    }
+
+
+def result_to_sheet_row(result: Dict[str, Any]) -> List[Any]:
+    return [result.get(h, "") for h in RESULTS_SHEET_HEADERS]
+
+
+def build_results_sheet_values(data: Dict[str, Any], day_name: str) -> List[List[Any]]:
+    rows = [dict(r) for r in data.get("results", {}).values() if r.get("day_name") == day_name]
+    rows.sort(key=lambda r: (str(r.get("sport", "")), str(r.get("match_time", "")), str(r.get("group", "")), str(r.get("id", ""))))
+    values = [RESULTS_SHEET_HEADERS[:]]
+    for r in rows:
+        values.append(result_to_sheet_row(r))
+    return values
+
+
+def fetch_results_rows_via_api(day_name: str) -> Optional[List[Dict[str, Any]]]:
+    """Read results tab via Sheets API when service account is configured."""
+    if not drive_store.sheets_enabled():
+        return None
+    links = get_current_sheet_links()
+    spreadsheet_id = get_results_spreadsheet_id(links)
+    if not spreadsheet_id:
+        return None
+    preferred_name = str((links.get("results_sheet_names") or {}).get(day_name) or DEFAULT_RESULTS_SHEET_NAMES.get(day_name) or day_name).strip()
+    results_url = str((links.get("results") or {}).get(day_name) or "").strip()
+    gid = drive_store.extract_gid(results_url)
+    try:
+        title = drive_store.resolve_sheet_title(spreadsheet_id, preferred_name=preferred_name, gid=gid)
+        if not title:
+            return None
+        svc = drive_store._sheets_service()
+        if not svc:
+            return None
+        safe_title = str(title).replace("'", "''")
+        res = svc.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id,
+            range=f"'{safe_title}'",
+        ).execute()
+        values = res.get("values") or []
+        if not values:
+            return []
+        headers = [str(h).strip() for h in values[0]]
+        rows = []
+        for raw in values[1:]:
+            row = {}
+            for idx, header in enumerate(headers):
+                if not header:
+                    continue
+                row[header] = raw[idx] if idx < len(raw) else ""
+            item = normalize_result_record(row, fallback_day=day_name)
+            if item:
+                rows.append(item)
+        return rows
+    except Exception as e:
+        print(f"⚠️ results API read failed for {day_name}: {e}")
+        return None
+
+
+def fetch_results_once(day_name: str, url: Optional[str] = None) -> List[Dict[str, Any]]:
+    urls = get_current_results_urls()
+    target = (url if url is not None else urls.get(day_name, "")).strip()
+    if day_name not in DEFAULT_RESULTS_URLS:
+        raise ValueError(f"Unknown results day: {day_name}")
+
+    # Prefer live Sheets API read (no publish delay) when available.
+    api_rows = fetch_results_rows_via_api(day_name)
+    if api_rows is not None:
+        all_results_sheet_data[day_name] = api_rows
+        return api_rows
+
+    if not target:
+        all_results_sheet_data[day_name] = []
+        return []
+    response = requests.get(target, timeout=20)
+    response.raise_for_status()
+    response.encoding = "utf-8"
+    df = pd.read_csv(StringIO(response.text))
+    df.columns = df.columns.str.strip()
+    rows = df.fillna("").to_dict(orient="records")
+    normalized = []
+    for row in rows:
+        item = normalize_result_record(row, fallback_day=day_name)
+        if item:
+            normalized.append(item)
+    all_results_sheet_data[day_name] = normalized
+    return normalized
+
+
+def push_results_day_to_google_sheet(data: Dict[str, Any], day_name: str) -> Dict[str, Any]:
+    """Write local results for a day into Google Sheets (requires service account edit access)."""
+    if day_name not in DEFAULT_RESULTS_URLS:
+        return {"ok": False, "skipped": True, "reason": "unknown_day"}
+    if not drive_store.sheets_enabled():
+        return {"ok": False, "skipped": True, "reason": "sheets_api_disabled"}
+
+    links = ensure_sheet_links(data)
+    spreadsheet_id = get_results_spreadsheet_id(links)
+    if not spreadsheet_id:
+        return {"ok": False, "skipped": True, "reason": "missing_spreadsheet_id"}
+
+    sheet_names = links.get("results_sheet_names") or {}
+    preferred_name = str(sheet_names.get(day_name) or DEFAULT_RESULTS_SHEET_NAMES.get(day_name) or day_name).strip()
+    results_url = str((links.get("results") or {}).get(day_name) or "").strip()
+    gid = drive_store.extract_gid(results_url)
+
+    try:
+        title = drive_store.resolve_sheet_title(spreadsheet_id, preferred_name=preferred_name, gid=gid)
+        if not title:
+            return {"ok": False, "skipped": False, "reason": "sheet_tab_not_found"}
+        values = build_results_sheet_values(data, day_name)
+        ok = drive_store.write_values(spreadsheet_id, title, values, clear_first=True)
+        if not ok:
+            return {"ok": False, "skipped": False, "reason": "write_failed"}
+        return {
+            "ok": True,
+            "skipped": False,
+            "spreadsheet_id": spreadsheet_id,
+            "sheet_title": title,
+            "rows": max(0, len(values) - 1),
+        }
+    except Exception as e:
+        print(f"❌ push results {day_name}: {e}")
+        return {"ok": False, "skipped": False, "reason": str(e)}
+
+
+def push_all_results_to_google_sheets(data: Dict[str, Any]) -> Dict[str, Any]:
+    out = {}
+    for day in DEFAULT_RESULTS_URLS:
+        out[day] = push_results_day_to_google_sheet(data, day)
+    return out
+
+
+def merge_results_from_sheet_rows(data: Dict[str, Any], day_name: str, rows: List[Dict[str, Any]]) -> Dict[str, int]:
+    """Replace results of a day with sheet rows. Local-only days stay if sheet empty and URL empty is handled by caller."""
+    results = data.setdefault("results", {})
+    before = len(results)
+    # remove current day results then insert sheet rows
+    to_delete = [rid for rid, r in results.items() if r.get("day_name") == day_name]
+    for rid in to_delete:
+        del results[rid]
+
+    added = 0
+    for row in rows:
+        item = normalize_result_record(row, fallback_day=day_name)
+        if not item:
+            continue
+        rid = item["id"]
+        results[rid] = item
+        added += 1
+    data["results"] = results
+    return {"removed": len(to_delete), "added": added, "before": before, "after": len(results)}
+
+
+def sync_results_from_sheets(save: bool = True) -> Dict[str, Any]:
+    """Pull results sheets into local warzone_data results (API first, CSV fallback)."""
+    data = load_data()
+    ensure_sheet_links(data)
+    summary = {"days": {}, "changed": False}
+    urls = get_current_results_urls()
+    has_api = bool(drive_store.sheets_enabled() and get_results_spreadsheet_id())
+    any_configured = has_api or any(str(u or "").strip() for u in urls.values())
+    if not any_configured:
+        summary["message"] = "no_results_urls_configured"
+        return summary
+
+    changed = False
+    for day, url in urls.items():
+        url = str(url or "").strip()
+        if not url and not has_api:
+            summary["days"][day] = {"skipped": True, "reason": "empty_url"}
+            continue
+        try:
+            rows = fetch_results_once(day, url)
+            # Compare fingerprint
+            local_day = [r for r in data.get("results", {}).values() if r.get("day_name") == day]
+            def fp(items):
+                cleaned = []
+                for r in items:
+                    cleaned.append((
+                        str(r.get("id", "")),
+                        str(r.get("team1", "")),
+                        str(r.get("team2", "")),
+                        str(r.get("score1", "")),
+                        str(r.get("score2", "")),
+                        str(r.get("sport", "")),
+                        str(r.get("version", "")),
+                        str(r.get("group", "")),
+                        str(r.get("match_time", "")),
+                    ))
+                return tuple(sorted(cleaned))
+            if fp(local_day) != fp(rows):
+                stats = merge_results_from_sheet_rows(data, day, rows)
+                changed = True
+                summary["days"][day] = {"ok": True, "changed": True, **stats, "sheet_rows": len(rows)}
+            else:
+                summary["days"][day] = {"ok": True, "changed": False, "sheet_rows": len(rows)}
+        except Exception as e:
+            print(f"❌ Error syncing results {day}: {e}")
+            summary["days"][day] = {"ok": False, "error": str(e)}
+
+    summary["changed"] = changed
+    if changed and save:
+        save_data(data)
+    return summary
 
 
 def get_day_results_list(data: Dict[str, Any], day_name: str, sport: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -1180,22 +1623,37 @@ def send_push_to_all(title: str, body: str) -> int:
 
 
 async def sync_google_sheets_loop():
+    cycle = 0
     while True:
+        cycle += 1
         standing_urls = get_current_standings_urls()
         match_urls = get_current_matches_urls()
-        for key, url in standing_urls.items():
-            try:
-                rows = await asyncio.to_thread(fetch_standings_once, key, url)
-                print(f"✅ Updated sheet groups/standings: {key} ({len(rows)} rows)")
-            except Exception as e:
-                print(f"❌ Error syncing standings {key}: {e}")
-        for day, url in match_urls.items():
-            try:
-                rows = await asyncio.to_thread(fetch_matches_once, day, url)
-                print(f"✅ Updated sheet matches: {day} ({len(rows)} rows)")
-            except Exception as e:
-                print(f"❌ Error syncing {day}: {e}")
-        await asyncio.sleep(120)
+        # Results sync every cycle (default ~60s). Standings/matches every other cycle if interval is 60.
+        try:
+            async with _results_sheet_sync_lock:
+                summary = await asyncio.to_thread(sync_results_from_sheets, True)
+            if summary.get("changed"):
+                print(f"✅ Synced results from Google Sheets: {summary}")
+            else:
+                print(f"ℹ️ Results sheet check done: {summary.get('message') or 'no changes'}")
+        except Exception as e:
+            print(f"❌ Error syncing results sheets: {e}")
+
+        # Keep standings/matches refresh around 2 minutes even if results interval is faster.
+        if cycle % max(1, int(round(120 / max(RESULTS_SYNC_INTERVAL_SEC, 30)))) == 0 or cycle == 1:
+            for key, url in standing_urls.items():
+                try:
+                    rows = await asyncio.to_thread(fetch_standings_once, key, url)
+                    print(f"✅ Updated sheet groups/standings: {key} ({len(rows)} rows)")
+                except Exception as e:
+                    print(f"❌ Error syncing standings {key}: {e}")
+            for day, url in match_urls.items():
+                try:
+                    rows = await asyncio.to_thread(fetch_matches_once, day, url)
+                    print(f"✅ Updated sheet matches: {day} ({len(rows)} rows)")
+                except Exception as e:
+                    print(f"❌ Error syncing {day}: {e}")
+        await asyncio.sleep(max(30, RESULTS_SYNC_INTERVAL_SEC))
 
 
 
@@ -1598,6 +2056,9 @@ def get_sheet_links(request: Request):
     return {
         "standings": links["standings"],
         "matches": links["matches"],
+        "results": links.get("results", {}),
+        "results_sheet_names": links.get("results_sheet_names", {}),
+        "results_spreadsheet_id": links.get("results_spreadsheet_id", ""),
         "defaults": default_sheet_links(),
         "sports": SPORTS,
         "sport_labels": SPORT_LABELS,
@@ -1608,6 +2069,9 @@ def get_sheet_links(request: Request):
             for key in DEFAULT_SHEET_URLS
         },
         "match_labels": {key: DAY_LABELS.get(key, key) for key in DEFAULT_MATCHES_URLS},
+        "result_labels": {key: f"نتايج {DAY_LABELS.get(key, key)}" for key in DEFAULT_RESULTS_URLS},
+        "sheets_write_enabled": drive_store.sheets_enabled(),
+        "resolved_results_spreadsheet_id": get_results_spreadsheet_id(links),
     }
 
 
@@ -1618,6 +2082,7 @@ def save_sheet_links(payload: SheetLinksPayload, request: Request):
     links = ensure_sheet_links(data)
     changed_standings = []
     changed_matches = []
+    changed_results = []
 
     for key in DEFAULT_SHEET_URLS:
         if key in payload.standings:
@@ -1633,6 +2098,37 @@ def save_sheet_links(payload: SheetLinksPayload, request: Request):
                 changed_matches.append(key)
             links["matches"][key] = new_url
 
+    # Results CSV links (optional empty)
+    if payload.results:
+        for key in DEFAULT_RESULTS_URLS:
+            if key in payload.results:
+                new_url = validate_sheet_url(payload.results[key], allow_empty=True)
+                if links["results"].get(key) != new_url:
+                    changed_results.append(key)
+                links["results"][key] = new_url
+
+    if payload.results_sheet_names:
+        for key in DEFAULT_RESULTS_URLS:
+            if key in payload.results_sheet_names:
+                name = str(payload.results_sheet_names.get(key) or "").strip() or DEFAULT_RESULTS_SHEET_NAMES.get(key, key)
+                links["results_sheet_names"][key] = name
+
+    # Always accept spreadsheet id from payload when provided (including empty to clear).
+    if getattr(payload, "results_spreadsheet_id", None) is not None:
+        provided = False
+        fields_set = getattr(payload, "model_fields_set", None) or getattr(payload, "__fields_set__", set())
+        if "results_spreadsheet_id" in fields_set or str(payload.results_spreadsheet_id or "").strip():
+            provided = True
+        if provided:
+            raw_sid = str(payload.results_spreadsheet_id or "").strip()
+            if raw_sid:
+                extracted = drive_store.extract_spreadsheet_id(raw_sid) or raw_sid
+                links["results_spreadsheet_id"] = extracted
+            else:
+                # only clear if explicitly sent empty string in payload body
+                if "results_spreadsheet_id" in fields_set:
+                    links["results_spreadsheet_id"] = ""
+
     data["sheet_links"] = links
     save_data(data)
 
@@ -1641,14 +2137,18 @@ def save_sheet_links(payload: SheetLinksPayload, request: Request):
         all_standings_sheet_data[key] = []
     for key in changed_matches:
         all_matches_data[key] = []
+    for key in changed_results:
+        all_results_sheet_data[key] = []
 
     return {
         "status": "success",
         "message": "تم حفظ لينكات الشيتات. اضغط تحديث بيانات الشيت الآن لو عايز تسحبها فورًا.",
         "changed_standings": changed_standings,
         "changed_matches": changed_matches,
+        "changed_results": changed_results,
         "sheet_links": links,
     }
+
 
 
 @app.post("/admin/sheet-links/reset")
@@ -1661,13 +2161,36 @@ def reset_sheet_links(request: Request):
         all_standings_sheet_data[key] = []
     for key in DEFAULT_MATCHES_URLS:
         all_matches_data[key] = []
+    for key in DEFAULT_RESULTS_URLS:
+        all_results_sheet_data[key] = []
     return {"status": "success", "message": "تم إرجاع كل لينكات الشيتات للأصل", "sheet_links": data["sheet_links"]}
 
 
 @app.post("/admin/test-sheet-link")
 def test_sheet_link(payload: Dict[str, str], request: Request):
     require_admin(request)
-    url = validate_sheet_url(payload.get("url", ""))
+    url = validate_sheet_url(payload.get("url", ""), allow_empty=False)
+    # If user pasted a normal sheets edit URL / id, report extracted id instead of forcing CSV.
+    kind = str(payload.get("kind") or "").strip().lower()
+    if kind in ("results_id", "spreadsheet_id") or (not url.startswith("http") or "/edit" in url or "/spreadsheets/d/" in url and "output=csv" not in url):
+        sid = drive_store.extract_spreadsheet_id(url)
+        if sid and drive_store.sheets_enabled():
+            try:
+                title = drive_store.resolve_sheet_title(sid, preferred_name=str(payload.get("sheet_name") or ""), gid=drive_store.extract_gid(url))
+                return {
+                    "status": "success",
+                    "message": "تم التعرف على Google Sheet (للكتابة)",
+                    "spreadsheet_id": sid,
+                    "sheet_title": title,
+                    "write_enabled": True,
+                }
+            except Exception as e:
+                return {
+                    "status": "success",
+                    "message": f"تم استخراج spreadsheet id لكن فشل الوصول عبر API: {e}",
+                    "spreadsheet_id": sid,
+                    "write_enabled": False,
+                }
     try:
         response = requests.get(url, timeout=20)
         response.raise_for_status()
@@ -1842,18 +2365,27 @@ def save_result(payload: ResultPayload, request: Request):
     }
     save_data(data)
 
+    sheet_sync = push_results_day_to_google_sheet(data, payload.day_name)
+
     sent_to = 0
     if payload.notify:
         title = f"نتيجة {SPORT_LABELS.get(payload.sport, payload.sport)} 🏆"
         body = f"{team1_canonical} {payload.score1} - {payload.score2} {team2_canonical} | {DAY_LABELS.get(payload.day_name)}"
         sent_to = send_push_to_all(title, body)
 
+    msg = "تم حفظ النتيجة وتحديث الترتيب ونتائج اليوم"
+    if sheet_sync.get("ok"):
+        msg += " وتم تحديث شيت النتايج ✅"
+    elif not sheet_sync.get("skipped"):
+        msg += f" (تحذير: فشل تحديث شيت النتايج: {sheet_sync.get('reason')})"
+
     return {
         "status": "success",
-        "message": "تم حفظ النتيجة وتحديث الترتيب ونتائج اليوم",
+        "message": msg,
         "sent_to": sent_to,
         "result": data["results"][key],
         "standings": calculate_standings(data, payload.sport, payload.version),
+        "sheet_sync": sheet_sync,
     }
 
 
@@ -1863,9 +2395,14 @@ def delete_result(result_id: str, request: Request):
     data = load_data()
     if result_id not in data.get("results", {}):
         raise HTTPException(status_code=404, detail="النتيجة غير موجودة")
+    day_name = data["results"][result_id].get("day_name") or ""
     del data["results"][result_id]
     save_data(data)
-    return {"status": "success", "message": "تم حذف النتيجة والماتش رجع لقائمة التسجيل"}
+    sheet_sync = push_results_day_to_google_sheet(data, day_name) if day_name else {"ok": False, "skipped": True}
+    msg = "تم حذف النتيجة والماتش رجع لقائمة التسجيل"
+    if sheet_sync.get("ok"):
+        msg += " وتم تحديث شيت النتايج ✅"
+    return {"status": "success", "message": msg, "sheet_sync": sheet_sync}
 
 
 @app.post("/admin/team-name-override")
@@ -1904,6 +2441,7 @@ def reload_sheets(request: Request):
     require_admin(request)
     standings_count = 0
     matches_count = 0
+    results_count = 0
     errors = []
     standing_urls = get_current_standings_urls()
     match_urls = get_current_matches_urls()
@@ -1917,7 +2455,49 @@ def reload_sheets(request: Request):
             matches_count += len(fetch_matches_once(day, url))
         except Exception as e:
             errors.append(f"{day}: {e}")
-    return {"status": "success", "message": "تم تحديث بيانات الشيت", "standings_rows": standings_count, "matches_rows": matches_count, "errors": errors}
+    try:
+        results_summary = sync_results_from_sheets(save=True)
+        for day, info in (results_summary.get("days") or {}).items():
+            if info.get("ok"):
+                results_count += int(info.get("sheet_rows") or 0)
+            elif not info.get("skipped"):
+                errors.append(f"results:{day}: {info.get('error') or info.get('reason')}")
+    except Exception as e:
+        errors.append(f"results: {e}")
+        results_summary = {"error": str(e)}
+    return {
+        "status": "success",
+        "message": "تم تحديث بيانات الشيت",
+        "standings_rows": standings_count,
+        "matches_rows": matches_count,
+        "results_rows": results_count,
+        "results_summary": results_summary,
+        "errors": errors,
+    }
+
+
+@app.post("/admin/results-sheet/push")
+def push_results_sheet_now(request: Request):
+    """Force push local results into the configured Google results spreadsheet."""
+    require_admin(request)
+    data = load_data()
+    out = push_all_results_to_google_sheets(data)
+    ok_any = any(v.get("ok") for v in out.values())
+    return {
+        "status": "success" if ok_any else "error",
+        "message": "تم دفع النتايج للشيت" if ok_any else "فشل دفع النتايج للشيت — تأكد من لينك/صلاحيات الـ Service Account",
+        "days": out,
+        "write_enabled": drive_store.sheets_enabled(),
+        "spreadsheet_id": get_results_spreadsheet_id(),
+    }
+
+
+@app.post("/admin/results-sheet/pull")
+def pull_results_sheet_now(request: Request):
+    """Force pull results from published CSV links into the site."""
+    require_admin(request)
+    summary = sync_results_from_sheets(save=True)
+    return {"status": "success", "message": "تم سحب النتايج من الشيت", "summary": summary}
 
 
 @app.post("/admin/finals")
