@@ -98,14 +98,14 @@ VERSION_LABELS = {"1": "المجموعات", "2": "المجموعات 2"}
 DAY_LABELS = {"Day1": "اليوم الأول", "Day2": "اليوم الثاني"}
 
 DEFAULT_VISIBILITY = {
-    "teams": True,
+    "teams": False,
     "groups": True,
     "groups2": True,
     "finals": False,
-    "matches_day1": True,
+    "matches_day1": False,
     "matches_day2": True,
-    "results_day1": True,
-    "results_day2": True,
+    "results_day1": False,
+    "results_day2": False,
 }
 
 DATA_FILE = Path(os.getenv("WARZONE_DATA_FILE", "/tmp/warzone_data.json"))
